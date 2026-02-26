@@ -16,8 +16,13 @@
 import rscHandler from "virtual:vinext-rsc-entry";
 import { normalizePath } from "./normalize-path.js";
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<any>): void;
+  passThroughOnException(): void;
+}
+
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) then decode and normalize path.
@@ -48,6 +53,13 @@ export default {
 
     // Delegate to RSC handler
     const result = await rscHandler(normalizedRequest);
+
+    // If the middleware registered any waitUntil promises, hand them off to the runtime
+    if (result && typeof result === "object" && "__vinextWaitUntil" in result && Array.isArray(result.__vinextWaitUntil)) {
+      for (const p of result.__vinextWaitUntil) {
+        ctx.waitUntil(p);
+      }
+    }
 
     if (result instanceof Response) {
       return result;
