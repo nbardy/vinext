@@ -2130,7 +2130,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("__safeDevHosts");
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
-    const handleRequestIdx = code.indexOf("async function _handleRequest(request)");
+    const handleRequestIdx = code.indexOf("async function _handleRequest(request, _outerWaitUntilPromises)");
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
     // The call should be inside the function body (after the function declaration)
@@ -2238,6 +2238,13 @@ describe("App Router middleware with NextRequest", () => {
     for (const [key] of rewriteRes.headers) {
       expect(key.startsWith("x-middleware-")).toBe(false);
     }
+  });
+
+  it("middleware receives event with waitUntil (for Clerk compat)", async () => {
+    const res = await fetch(`${baseUrl}/middleware-event`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toBe("Event OK");
   });
 });
 

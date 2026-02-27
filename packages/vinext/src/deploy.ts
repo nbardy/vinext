@@ -406,7 +406,7 @@ interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     const url = new URL(request.url);
 
     // Image optimization via Cloudflare Images binding.
@@ -424,7 +424,7 @@ export default {
     }
 
     // Delegate everything else to vinext
-    return handler.fetch(request);
+    return handler.fetch(request, env, ctx);
   },
 };
 `;
@@ -439,7 +439,7 @@ export function generatePagesRouterWorkerEntry(): string {
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 
 // @ts-expect-error — virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware } from "virtual:vinext-server-entry";
 
 interface Env {
   ASSETS: Fetcher;
@@ -453,7 +453,7 @@ interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     try {
       const url = new URL(request.url);
       const pathname = url.pathname;
@@ -478,13 +478,47 @@ export default {
         }, allowedWidths);
       }
 
-      // API routes
-      if (pathname.startsWith("/api/") || pathname === "/api") {
-        return await handleApiRoute(request, urlWithQuery);
+      // Run middleware (for Pages Router production)
+      if (typeof runMiddleware === "function") {
+        const mwResult = await runMiddleware(request);
+        if (mwResult.waitUntilPromises && mwResult.waitUntilPromises.length > 0) {
+          for (const p of mwResult.waitUntilPromises) {
+            ctx.waitUntil(p);
+          }
+        }
+        if (!mwResult.continue) {
+          if (mwResult.redirectUrl) {
+            return new Response(null, {
+              status: mwResult.redirectStatus ?? 307,
+              headers: { Location: mwResult.redirectUrl, ...Object.fromEntries(mwResult.responseHeaders?.entries() || []) },
+            });
+          }
+          if (mwResult.response) {
+            return mwResult.response;
+          }
+        }
+        // If continue is true, optionally update request or handle rewrites here if needed
+        // (Currently, Pages Router production relies on client-side routing mostly, 
+        // but simple middleware works)
       }
 
-      // Page routes
-      return await renderPage(request, urlWithQuery, null);
+      let response;
+      // API routes
+      if (pathname.startsWith("/api/") || pathname === "/api") {
+        response = await handleApiRoute(request, urlWithQuery);
+      } else {
+        // Page routes
+        response = await renderPage(request, urlWithQuery, null);
+      }
+
+      // Bubble up any background tasks registered in the middleware layer
+      if (response && typeof response === "object" && "__vinextWaitUntil" in response && Array.isArray(response.__vinextWaitUntil)) {
+        for (const p of response.__vinextWaitUntil) {
+          ctx.waitUntil(p);
+        }
+      }
+
+      return response;
     } catch (error) {
       console.error("[vinext] Worker error:", error);
       return new Response("Internal Server Error", { status: 500 });
